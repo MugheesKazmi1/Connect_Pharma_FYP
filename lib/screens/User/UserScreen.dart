@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connect_pharma/services/request_service.dart';
 
 class UserScreen extends StatefulWidget {
@@ -16,6 +17,89 @@ class _UserScreenState extends State<UserScreen> {
   bool _loading = false;
   File? _prescription;
   final ImagePicker _picker = ImagePicker();
+  // Track previous request statuses to detect changes
+  final Map<String, String> _previousStatuses = {};
+  bool _isInitialLoad = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _listenToRequestStatusChanges();
+  }
+
+  /// Listen to user's requests and show notification when status changes to 'accepted'
+  void _listenToRequestStatusChanges() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    RequestService.streamRequestsForUser(user.uid).listen((snapshot) {
+      if (!mounted) return;
+
+      // On initial load, just populate the status map without showing notifications
+      if (_isInitialLoad) {
+        for (var doc in snapshot.docs) {
+          final requestId = doc.id;
+          final data = doc.data();
+          final currentStatus = data['status'] as String? ?? '';
+          _previousStatuses[requestId] = currentStatus;
+        }
+        _isInitialLoad = false;
+        return;
+      }
+
+      // After initial load, detect status changes
+      for (var doc in snapshot.docs) {
+        final requestId = doc.id;
+        final data = doc.data();
+        final currentStatus = data['status'] as String? ?? '';
+        final previousStatus = _previousStatuses[requestId];
+
+        // Detect status change from 'open' to 'accepted'
+        if (previousStatus == 'open' && currentStatus == 'accepted') {
+          final medicineName = data['medicineName'] as String? ?? '';
+          // Capitalize first letter for better display
+          final displayName = medicineName.isEmpty
+              ? 'your request'
+              : medicineName.length > 1
+                  ? medicineName[0].toUpperCase() + medicineName.substring(1)
+                  : medicineName.toUpperCase();
+          _showNotification(
+            'Request Accepted!',
+            'Your request for "$displayName" has been accepted by a pharmacy.',
+          );
+        }
+
+        // Update the previous status
+        _previousStatuses[requestId] = currentStatus;
+      }
+    });
+  }
+
+  void _showNotification(String title, String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(message),
+          ],
+        ),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 4),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
 
   Future<void> _pickPrescription() async {
     final XFile? file =
@@ -57,6 +141,7 @@ class _UserScreenState extends State<UserScreen> {
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _previousStatuses.clear();
     super.dispose();
   }
 

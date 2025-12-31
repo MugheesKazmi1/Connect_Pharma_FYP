@@ -54,12 +54,21 @@ class RequestService {
     Map<String, dynamic>? location,
     Map<String, dynamic>? meta,
   }) async {
+    // Validate input
+    final trimmedName = medicineName.trim();
+    if (trimmedName.isEmpty) {
+      throw Exception('Medicine name cannot be empty');
+    }
+    if (userId.isEmpty) {
+      throw Exception('User ID cannot be empty');
+    }
+
     final docRef = _db.collection('requests').doc();
     final payload = <String, dynamic>{
       'userId': userId,
-      'medicineName': medicineName.trim().toLowerCase(),
+      'medicineName': trimmedName.toLowerCase(),
       'prescriptionUrl': prescriptionUrl,
-      'broadcast': broadcast,
+      'broadcast': broadcast, // Ensure broadcast is set correctly
       'pharmacyId': pharmacyId,
       'status': 'open', // open, accepted, cancelled, completed
       'createdAt': FieldValue.serverTimestamp(),
@@ -87,12 +96,17 @@ class RequestService {
   }
 
   /// Fetch open broadcast requests (useful for pharmacy apps).
+  /// Returns all requests where broadcast=true and status='open'.
+  /// Note: Removed orderBy to avoid requiring a composite index in Firestore.
+  /// This ensures the query works immediately without index setup.
+  /// Results are returned in natural order (can be sorted client-side if needed).
   static Stream<QuerySnapshot<Map<String, dynamic>>> streamOpenBroadcastRequests() {
+    // Query without orderBy to avoid index requirement
+    // This ensures requests are always visible even if Firestore index is missing
     return _db
         .collection('requests')
         .where('broadcast', isEqualTo: true)
         .where('status', isEqualTo: 'open')
-        .orderBy('createdAt', descending: true)
         .snapshots();
   }
 
@@ -111,12 +125,32 @@ class RequestService {
   }
 
   /// Mark request accepted by a pharmacy.
+  /// Prevents race conditions by checking if request is still open before accepting.
   static Future<void> acceptRequest(String requestId, String pharmacyId) async {
     try {
-      await _db.collection('requests').doc(requestId).update({
-        'status': 'accepted',
-        'acceptedBy': pharmacyId,
-        'acceptedAt': FieldValue.serverTimestamp(),
+      // Use a transaction to ensure the request is still open
+      await _db.runTransaction((transaction) async {
+        final docRef = _db.collection('requests').doc(requestId);
+        final doc = await transaction.get(docRef);
+        
+        if (!doc.exists) {
+          throw Exception('Request not found');
+        }
+        
+        final data = doc.data()!;
+        if (data['status'] != 'open') {
+          throw Exception('Request already ${data['status']}');
+        }
+        
+        if (data['acceptedBy'] != null) {
+          throw Exception('Request already accepted by another pharmacy');
+        }
+        
+        transaction.update(docRef, {
+          'status': 'accepted',
+          'acceptedBy': pharmacyId,
+          'acceptedAt': FieldValue.serverTimestamp(),
+        });
       });
     } on FirebaseException catch (e) {
       throw Exception('Firestore error (${e.code}): ${e.message}');
