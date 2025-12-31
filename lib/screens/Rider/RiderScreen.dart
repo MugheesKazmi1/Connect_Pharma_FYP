@@ -1,7 +1,65 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:connect_pharma/services/request_service.dart';
+import 'package:connect_pharma/screens/ChatScreen.dart';
 import 'package:connect_pharma/widgets/FadeInSlide.dart';
 
 class RiderScreen extends StatefulWidget {
-  // ... existing code ...
+  const RiderScreen({super.key});
+
+  @override
+  State<RiderScreen> createState() => _RiderScreenState();
+}
+
+class _RiderScreenState extends State<RiderScreen> with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Rider Dashboard'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              await FirebaseAuth.instance.signOut();
+              if (mounted) {
+                Navigator.pushNamedAndRemoveUntil(context, '/', (r) => false);
+              }
+            },
+          )
+        ],
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: 'New Orders'),
+            Tab(text: 'My Deliveries'),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildNewOrders(),
+          _buildMyDeliveries(),
+        ],
+      ),
+    );
+  }
 
   // Tab 1: Orders ready for pickup (Accepted by pharmacist)
   Widget _buildNewOrders() {
