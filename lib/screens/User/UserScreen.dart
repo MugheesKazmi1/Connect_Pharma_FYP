@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -20,11 +21,15 @@ class _UserScreenState extends State<UserScreen> {
   // Track previous request statuses to detect changes
   final Map<String, String> _previousStatuses = {};
   bool _isInitialLoad = true;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _requestSubscription;
 
   @override
   void initState() {
     super.initState();
-    _listenToRequestStatusChanges();
+    // Delay listener setup to ensure widget is fully mounted
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _listenToRequestStatusChanges();
+    });
   }
 
   /// Listen to user's requests and show notification when status changes to 'accepted'
@@ -32,71 +37,133 @@ class _UserScreenState extends State<UserScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    RequestService.streamRequestsForUser(user.uid).listen((snapshot) {
-      if (!mounted) return;
+    // Cancel existing subscription if any
+    _requestSubscription?.cancel();
 
-      // On initial load, just populate the status map without showing notifications
-      if (_isInitialLoad) {
+    _requestSubscription = RequestService.streamRequestsForUser(user.uid).listen(
+      (snapshot) {
+        if (!mounted) return;
+
+        // On initial load, just populate the status map without showing notifications
+        if (_isInitialLoad) {
+          for (var doc in snapshot.docs) {
+            final requestId = doc.id;
+            final data = doc.data();
+            final currentStatus = data['status'] as String? ?? '';
+            _previousStatuses[requestId] = currentStatus;
+          }
+          _isInitialLoad = false;
+          return;
+        }
+
+        // After initial load, detect status changes
         for (var doc in snapshot.docs) {
           final requestId = doc.id;
           final data = doc.data();
           final currentStatus = data['status'] as String? ?? '';
+          final previousStatus = _previousStatuses[requestId];
+
+          // Detect status change from 'open' to 'accepted'
+          if (previousStatus == 'open' && currentStatus == 'accepted') {
+            final medicineName = data['medicineName'] as String? ?? '';
+            final pharmacyId = data['acceptedBy'] as String?;
+            
+            // Capitalize first letter for better display
+            final displayName = medicineName.isEmpty
+                ? 'your request'
+                : medicineName.length > 1
+                    ? medicineName[0].toUpperCase() + medicineName.substring(1)
+                    : medicineName.toUpperCase();
+            
+            // Fetch pharmacy name and show notification
+            _fetchPharmacyNameAndNotify(pharmacyId, displayName);
+          }
+
+          // Update the previous status
           _previousStatuses[requestId] = currentStatus;
         }
-        _isInitialLoad = false;
-        return;
-      }
+      },
+      onError: (error) {
+        // Handle errors silently or log them
+        debugPrint('Error listening to requests: $error');
+      },
+    );
+  }
 
-      // After initial load, detect status changes
-      for (var doc in snapshot.docs) {
-        final requestId = doc.id;
-        final data = doc.data();
-        final currentStatus = data['status'] as String? ?? '';
-        final previousStatus = _previousStatuses[requestId];
-
-        // Detect status change from 'open' to 'accepted'
-        if (previousStatus == 'open' && currentStatus == 'accepted') {
-          final medicineName = data['medicineName'] as String? ?? '';
-          // Capitalize first letter for better display
-          final displayName = medicineName.isEmpty
-              ? 'your request'
-              : medicineName.length > 1
-                  ? medicineName[0].toUpperCase() + medicineName.substring(1)
-                  : medicineName.toUpperCase();
-          _showNotification(
-            'Request Accepted!',
-            'Your request for "$displayName" has been accepted by a pharmacy.',
-          );
+  /// Fetch pharmacy name from Firestore and show notification
+  Future<void> _fetchPharmacyNameAndNotify(String? pharmacyId, String medicineName) async {
+    String pharmacyName = 'a pharmacy';
+    
+    if (pharmacyId != null && pharmacyId.isNotEmpty) {
+      try {
+        final pharmacyDoc = await FirebaseFirestore.instance
+            .collection('pharmacists')
+            .doc(pharmacyId)
+            .get();
+        
+        if (pharmacyDoc.exists) {
+          final pharmacyData = pharmacyDoc.data();
+          pharmacyName = pharmacyData?['displayName'] as String? ?? 
+                        pharmacyData?['pharmacyName'] as String? ?? 
+                        pharmacyData?['name'] as String? ?? 
+                        'Pharmacy';
+        } else {
+          // If not found in pharmacists, try using the ID as fallback
+          pharmacyName = 'Pharmacy';
         }
-
-        // Update the previous status
-        _previousStatuses[requestId] = currentStatus;
+      } catch (e) {
+        // If error fetching, use default name
+        pharmacyName = 'a pharmacy';
       }
-    });
+    }
+    
+    if (mounted) {
+      _showNotification(
+        'Request Accepted!',
+        'Your request for "$medicineName" has been accepted by $pharmacyName.',
+      );
+    }
   }
 
   void _showNotification(String title, String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+        content: Row(
           children: [
-            Text(
-              title,
-              style: const TextStyle(
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
+            const Icon(Icons.check_circle, color: Colors.white, size: 28),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      fontSize: 16,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    message,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 4),
-            Text(message),
           ],
         ),
         backgroundColor: Colors.green,
-        duration: const Duration(seconds: 4),
+        duration: const Duration(seconds: 5),
         behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        elevation: 6,
       ),
     );
   }
@@ -141,6 +208,7 @@ class _UserScreenState extends State<UserScreen> {
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _requestSubscription?.cancel();
     _previousStatuses.clear();
     super.dispose();
   }
@@ -265,34 +333,232 @@ class _UserScreenState extends State<UserScreen> {
   }
 
   Widget _recentRequestsCard() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return const SizedBox.shrink();
+    }
+
     return Padding(
       padding: const EdgeInsets.all(16.0),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Recent Requests',
-            style: TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        Card(
-          child: ListTile(
-            leading: const Icon(Icons.receipt_long),
-            title: const Text('Amoxicillin 500mg'),
-            subtitle: const Text('Sent 2h ago • Broadcast'),
-            trailing: TextButton(
-                onPressed: () => _showSnack('Track not implemented'),
-                child: const Text('Track')),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'My Requests',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
           ),
-        ),
-        Card(
-          child: ListTile(
-            leading: const Icon(Icons.receipt_long),
-            title: const Text('Prescription (image)'),
-            subtitle: const Text('Sent yesterday • Direct'),
-            trailing: TextButton(
-                onPressed: () => _showSnack('Details not implemented'),
-                child: const Text('Details')),
+          const SizedBox(height: 12),
+          StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: RequestService.streamRequestsForUser(user.uid),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(20.0),
+                    child: CircularProgressIndicator(),
+                  ),
+                );
+              }
+
+              if (snapshot.hasError) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20.0),
+                    child: Text('Error: ${snapshot.error}'),
+                  ),
+                );
+              }
+
+              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                return Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20.0),
+                    child: Center(
+                      child: Text(
+                        'No requests yet',
+                        style: TextStyle(color: Colors.grey[600]),
+                      ),
+                    ),
+                  ),
+                );
+              }
+
+              final docs = snapshot.data!.docs;
+
+              return Column(
+                children: docs.map((doc) {
+                  final data = doc.data();
+                  final status = data['status'] as String? ?? 'unknown';
+                  final medicineName = data['medicineName'] as String? ?? '';
+                  final createdAt = data['createdAt'] as Timestamp?;
+                  final acceptedBy = data['acceptedBy'] as String?;
+                  final prescriptionUrl = data['prescriptionUrl'] as String?;
+
+                  // Format medicine name
+                  final displayName = medicineName.isEmpty
+                      ? 'Unknown Medicine'
+                      : medicineName.length > 1
+                          ? medicineName[0].toUpperCase() + medicineName.substring(1)
+                          : medicineName.toUpperCase();
+
+                  // Determine status color and icon
+                  Color statusColor;
+                  IconData statusIcon;
+                  String statusText;
+
+                  switch (status) {
+                    case 'accepted':
+                      statusColor = Colors.green;
+                      statusIcon = Icons.check_circle;
+                      statusText = 'Accepted';
+                      break;
+                    case 'open':
+                      statusColor = Colors.orange;
+                      statusIcon = Icons.pending;
+                      statusText = 'Pending';
+                      break;
+                    case 'cancelled':
+                      statusColor = Colors.grey;
+                      statusIcon = Icons.cancel;
+                      statusText = 'Cancelled';
+                      break;
+                    case 'completed':
+                      statusColor = Colors.blue;
+                      statusIcon = Icons.done_all;
+                      statusText = 'Completed';
+                      break;
+                    default:
+                      statusColor = Colors.grey;
+                      statusIcon = Icons.help_outline;
+                      statusText = status;
+                  }
+
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    elevation: status == 'accepted' ? 4 : 2,
+                    color: status == 'accepted' ? Colors.green.shade50 : null,
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: statusColor.withOpacity(0.2),
+                        child: Icon(statusIcon, color: statusColor, size: 24),
+                      ),
+                      title: Text(
+                        displayName,
+                        style: TextStyle(
+                          fontWeight: status == 'accepted' 
+                              ? FontWeight.bold 
+                              : FontWeight.normal,
+                        ),
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Icon(statusIcon, 
+                                   color: statusColor, 
+                                   size: 16),
+                              const SizedBox(width: 4),
+                              Text(
+                                statusText,
+                                style: TextStyle(
+                                  color: statusColor,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              if (status == 'accepted' && acceptedBy != null)
+                                FutureBuilder<DocumentSnapshot>(
+                                  future: FirebaseFirestore.instance
+                                      .collection('pharmacists')
+                                      .doc(acceptedBy)
+                                      .get(),
+                                  builder: (context, pharmacySnapshot) {
+                                    if (pharmacySnapshot.hasData &&
+                                        pharmacySnapshot.data!.exists) {
+                                      final pharmacyData = 
+                                          pharmacySnapshot.data!.data();
+                                      final pharmacyName = 
+                                          pharmacyData?['displayName'] as String? ?? 
+                                          pharmacyData?['pharmacyName'] as String? ?? 
+                                          pharmacyData?['name'] as String? ?? 
+                                          'Pharmacy';
+                                      return Padding(
+                                        padding: const EdgeInsets.only(left: 8),
+                                        child: Text(
+                                          'by $pharmacyName',
+                                          style: TextStyle(
+                                            color: Colors.green.shade700,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                    return const SizedBox.shrink();
+                                  },
+                                ),
+                            ],
+                          ),
+                          if (createdAt != null) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              _formatTimestamp(createdAt),
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                          if (prescriptionUrl != null) ...[
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Icon(Icons.image, 
+                                     size: 14, 
+                                     color: Colors.grey[600]),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Prescription attached',
+                                  style: TextStyle(
+                                    color: Colors.grey[600],
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ],
+                      ),
+                      trailing: status == 'accepted'
+                          ? Icon(Icons.arrow_forward_ios,
+                                color: Colors.green.shade700,
+                                size: 18)
+                          : null,
+                    ),
+                  );
+                }).toList(),
+              );
+            },
           ),
-        ),
-      ]),
+        ],
+      ),
     );
+  }
+
+  String _formatTimestamp(Timestamp timestamp) {
+    final now = DateTime.now();
+    final time = timestamp.toDate();
+    final difference = now.difference(time);
+
+    if (difference.inDays > 0) {
+      return '${difference.inDays} day${difference.inDays > 1 ? 's' : ''} ago';
+    } else if (difference.inHours > 0) {
+      return '${difference.inHours} hour${difference.inHours > 1 ? 's' : ''} ago';
+    } else if (difference.inMinutes > 0) {
+      return '${difference.inMinutes} minute${difference.inMinutes > 1 ? 's' : ''} ago';
+    } else {
+      return 'Just now';
+    }
   }
 
   @override
