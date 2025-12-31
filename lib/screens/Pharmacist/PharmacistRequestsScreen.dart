@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:connect_pharma/services/request_service.dart';
 import 'package:connect_pharma/screens/ChatScreen.dart';
 
@@ -12,9 +13,8 @@ class PharmacistRequestsScreen extends StatefulWidget {
 
 class _PharmacistRequestsScreenState extends State<PharmacistRequestsScreen> 
     with SingleTickerProviderStateMixin {
-  // TODO: Replace with logged-in pharmacist ID dynamically
-  final String pharmacistId = 'pharmacy_001';
   late TabController _tabController;
+  final String currentPharmacistId = FirebaseAuth.instance.currentUser!.uid;
 
   @override
   void initState() {
@@ -33,6 +33,17 @@ class _PharmacistRequestsScreenState extends State<PharmacistRequestsScreen>
     return Scaffold(
       appBar: AppBar(
         title: const Text('Pharmacist Dashboard'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              await FirebaseAuth.instance.signOut();
+              if (mounted) {
+                Navigator.pushNamedAndRemoveUntil(context, '/', (r) => false);
+              }
+            },
+          )
+        ],
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
@@ -105,7 +116,7 @@ class _PharmacistRequestsScreenState extends State<PharmacistRequestsScreen>
 
   Widget _buildMyJobs() {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: RequestService.streamRequestsAcceptedByPharmacist(pharmacistId),
+      stream: RequestService.streamRequestsAcceptedByPharmacist(currentPharmacistId),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
@@ -161,7 +172,7 @@ class _PharmacistRequestsScreenState extends State<PharmacistRequestsScreen>
 
   Future<void> _acceptRequest(String requestId) async {
     try {
-      await RequestService.acceptRequest(requestId, pharmacistId);
+      await RequestService.acceptRequest(requestId, currentPharmacistId);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Request accepted')));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));

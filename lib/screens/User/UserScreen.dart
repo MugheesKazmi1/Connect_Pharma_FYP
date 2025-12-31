@@ -426,6 +426,11 @@ class _UserScreenState extends State<UserScreen> {
                       statusIcon = Icons.check_circle;
                       statusText = 'Accepted';
                       break;
+                    case 'delivering':
+                      statusColor = Colors.orange;
+                      statusIcon = Icons.delivery_dining;
+                      statusText = 'Out for Delivery';
+                      break;
                     case 'open':
                       statusColor = Colors.orange;
                       statusIcon = Icons.pending;
@@ -450,8 +455,8 @@ class _UserScreenState extends State<UserScreen> {
                   // Changed list tile to be inside a column to allow extra buttons at bottom
                   return Card(
                     margin: const EdgeInsets.only(bottom: 12),
-                    elevation: status == 'accepted' ? 4 : 2,
-                    color: status == 'accepted' ? Colors.green.shade50 : null,
+                    elevation: (status == 'accepted' || status == 'delivering') ? 4 : 2,
+                    color: (status == 'accepted' || status == 'delivering') ? Colors.green.shade50 : null,
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -463,7 +468,7 @@ class _UserScreenState extends State<UserScreen> {
                           title: Text(
                             displayName,
                             style: TextStyle(
-                              fontWeight: status == 'accepted' 
+                              fontWeight: (status == 'accepted' || status == 'delivering')
                                   ? FontWeight.bold 
                                   : FontWeight.normal,
                             ),
@@ -485,7 +490,7 @@ class _UserScreenState extends State<UserScreen> {
                                       fontWeight: FontWeight.w600,
                                     ),
                                   ),
-                                  if (status == 'accepted' && acceptedBy != null)
+                                  if ((status == 'accepted' || status == 'delivering') && acceptedBy != null)
                                     FutureBuilder<DocumentSnapshot>(
                                       future: FirebaseFirestore.instance
                                           .collection('pharmacists')
@@ -549,9 +554,11 @@ class _UserScreenState extends State<UserScreen> {
                           ),
                           trailing: null,
                         ),
-                        // Add buttons if accepted
+                        // Add buttons if accepted or delivering
                         if (status == 'accepted')
                           _buildAcceptedOptions(doc.id, data),
+                        if (status == 'delivering')
+                           _buildTrackDeliveryOption(doc.id, data),
                       ],
                     ),
                   );
@@ -560,6 +567,34 @@ class _UserScreenState extends State<UserScreen> {
             },
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildTrackDeliveryOption(String requestId, Map<String, dynamic> data) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      child: SizedBox(
+        width: double.infinity,
+        child: ElevatedButton.icon(
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => DeliveryScreen(
+                  requestId: requestId,
+                  requestData: data,
+                ),
+              ),
+            );
+          },
+          icon: const Icon(Icons.location_on),
+          label: const Text('Track Delivery & Chat'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.orange,
+            foregroundColor: Colors.white,
+          ),
+        ),
       ),
     );
   }
