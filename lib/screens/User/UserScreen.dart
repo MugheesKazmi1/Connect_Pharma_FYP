@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:connect_pharma/services/notification_service.dart';
 import 'package:connect_pharma/services/ml_service.dart';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -25,7 +24,7 @@ class UserScreen extends StatefulWidget {
 class _UserScreenState extends State<UserScreen> {
   final _searchCtrl = TextEditingController();
   bool _loading = false;
-  File? _prescription;
+  XFile? _prescription;
   final ImagePicker _picker = ImagePicker();
   // Track previous request statuses to detect changes
   final Map<String, String> _previousStatuses = {};
@@ -244,7 +243,7 @@ class _UserScreenState extends State<UserScreen> {
     final XFile? file =
         await _picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
     if (file == null) return;
-    setState(() => _prescription = File(file.path));
+    setState(() => _prescription = file);
   }
 
   Future<void> _uploadAndBroadcast() async {

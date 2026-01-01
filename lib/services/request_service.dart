@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -12,7 +11,7 @@ class RequestService {
   static final Uuid _uuid = const Uuid();
 
   /// Uploads a prescription image and returns a download URL.
-  /// Accepts a File (mobile/desktop), XFile (image_picker) or Uint8List (web).
+  /// Accepts XFile (image_picker) or Uint8List (web).
   static Future<String> uploadPrescription(dynamic image) async {
     if (image == null) throw Exception('No image provided');
 
@@ -21,9 +20,7 @@ class RequestService {
 
     try {
       TaskSnapshot task;
-      if (image is File) {
-        task = await ref.putFile(image, SettableMetadata(contentType: 'image/jpeg'));
-      } else if (image is XFile) {
+      if (image is XFile) {
         final bytes = await image.readAsBytes();
         task = await ref.putData(bytes, SettableMetadata(contentType: 'image/jpeg'));
       } else if (image is Uint8List) {
