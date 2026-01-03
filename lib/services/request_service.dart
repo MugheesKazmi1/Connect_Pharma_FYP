@@ -1,78 +1,62 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 
 class RequestService {
-  static final FirebaseFirestore _db = FirebaseFirestore.instance;
-  static final FirebaseStorage _storage = FirebaseStorage.instance;
-  static final Uuid _uuid = const Uuid();
+  static final _firestore = FirebaseFirestore.instance;
+  // REMOVED: Firebase Storage not used due to account upgrade requirements
+  // static final _storage = FirebaseStorage.instance; 
+  static const _uuid = Uuid();
+  static const String _backendUrl = 'http://192.168.0.101:5000';
 
   /// Uploads a prescription image and returns a download URL.
   /// Accepts XFile (image_picker) or Uint8List (web).
   static Future<String> uploadPrescription(dynamic image) async {
-    if (image == null) throw Exception('No image provided');
-
-    final id = _uuid.v4();
-    final ref = _storage.ref().child('prescriptions/$id.jpg');
-    
-    print('Storage Bucket: ${_storage.bucket}');
-    print('Upload path: descriptions/$id.jpg');
+    print('Uploading prescription to local backend: $_backendUrl/upload');
 
     try {
-      TaskSnapshot snapshot;
-      
-      if (!kIsWeb && image is XFile) {
-        print('Using putFile for mobile upload...');
-        final uploadTask = ref.putFile(
-          File(image.path), 
-          SettableMetadata(contentType: 'image/jpeg')
-        );
-        
-        uploadTask.snapshotEvents.listen((TaskSnapshot snap) {
-           print('Upload progress: ${((snap.bytesTransferred / snap.totalBytes) * 100).toStringAsFixed(2)}%');
-        });
+      final uploadUri = Uri.parse('$_backendUrl/upload');
+      final request = http.MultipartRequest('POST', uploadUri);
 
-        snapshot = await uploadTask.timeout(const Duration(seconds: 45));
+      if (image is XFile) {
+        request.files.add(await http.MultipartFile.fromPath(
+          'file',
+          image.path,
+          filename: image.name,
+        ));
+      } else if (image is Uint8List) {
+        request.files.add(http.MultipartFile.fromBytes(
+          'file',
+          image,
+          filename: 'prescription_${DateTime.now().millisecondsSinceEpoch}.jpg',
+        ));
       } else {
-        print('Using putData for web/bytes upload...');
-        Uint8List bytes;
-        if (image is XFile) {
-          bytes = await image.readAsBytes();
-        } else if (image is Uint8List) {
-          bytes = image;
-        } else {
-          throw Exception('Unsupported image type: ${image.runtimeType}');
-        }
-
-        final uploadTask = ref.putData(bytes, SettableMetadata(contentType: 'image/jpeg'));
-        
-        uploadTask.snapshotEvents.listen((TaskSnapshot snap) {
-          final progress = 100.0 * (snap.bytesTransferred / snap.totalBytes);
-          print('Upload progress: ${progress.toStringAsFixed(2)}%');
-        });
-
-        snapshot = await uploadTask.timeout(
-          const Duration(seconds: 30),
-          onTimeout: () => throw Exception('Upload timed out after 30 seconds. Check CORS if on Web, or Bucket existence on Mobile.'),
-        );
+        throw Exception('Unsupported image type: ${image.runtimeType}');
       }
 
-      print('Upload finished. State: ${snapshot.state}');
-      final url = await snapshot.ref.getDownloadURL();
-      print('Download URL obtained: $url');
-      return url;
-    } on FirebaseException catch (e) {
-      if (e.code == 'object-not-found') {
-        throw Exception('Storage error: Bucket not found or file disappeared. Ensure your Storage bucket is initialized in Firebase Console.');
+      print('Sending multipart request...');
+      final streamedResponse = await request.send().timeout(const Duration(seconds: 30));
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final url = data['url'];
+        print('Upload successful. URL: $url');
+        return url;
+      } else {
+        print('Upload failed with status: ${response.statusCode}');
+        print('Response: ${response.body}');
+        throw Exception('Failed to upload to local backend: ${response.statusCode}');
       }
-      throw Exception('Storage error (${e.code}): ${e.message}');
     } catch (e) {
-      throw Exception('Failed to upload prescription: $e');
+      print('Upload error: $e');
+      throw Exception('Failed to upload prescription: $e. Ensure your PC and phone are on the same Wi-Fi and PC IP (192.168.0.101) is correct.');
     }
   }
 
@@ -99,7 +83,7 @@ class RequestService {
       throw Exception('User ID cannot be empty');
     }
 
-    final docRef = _db.collection('requests').doc();
+    final docRef = _firestore.collection('requests').doc();
     final payload = <String, dynamic>{
       'userId': userId,
       'medicineName': trimmedName.toLowerCase(),
@@ -130,7 +114,7 @@ class RequestService {
   /// Note: Removed orderBy to avoid requiring a composite index in Firestore.
   /// Results are returned in natural order (should be sorted client-side by createdAt).
   static Stream<QuerySnapshot<Map<String, dynamic>>> streamRequestsForUser(String userId) {
-    return _db
+    return _firestore
         .collection('requests')
         .where('userId', isEqualTo: userId)
         .snapshots();
@@ -144,7 +128,7 @@ class RequestService {
   static Stream<QuerySnapshot<Map<String, dynamic>>> streamOpenBroadcastRequests() {
     // Query without orderBy to avoid index requirement
     // This ensures requests are always visible even if Firestore index is missing
-    return _db
+    return _firestore
         .collection('requests')
         .where('broadcast', isEqualTo: true)
         .snapshots();
@@ -153,7 +137,7 @@ class RequestService {
   /// Fetch accepted requests for riders.
   /// Returns all requests where status='accepted'.
   static Stream<QuerySnapshot<Map<String, dynamic>>> streamAcceptedRequests() {
-    return _db
+    return _firestore
         .collection('requests')
         .where('status', isEqualTo: 'accepted')
         .snapshots();
@@ -162,7 +146,7 @@ class RequestService {
   /// Cancel a request (user action).
   static Future<void> cancelRequest(String requestId) async {
     try {
-      await _db.collection('requests').doc(requestId).update({
+      await _firestore.collection('requests').doc(requestId).update({
         'status': 'cancelled',
         'cancelledAt': FieldValue.serverTimestamp(),
       });
@@ -178,8 +162,8 @@ class RequestService {
   static Future<void> acceptRequest(String requestId, String pharmacyId, double lat, double lng) async {
     try {
       // Use a transaction to ensure the request is still open
-      await _db.runTransaction((transaction) async {
-        final docRef = _db.collection('requests').doc(requestId);
+      await _firestore.runTransaction((transaction) async {
+        final docRef = _firestore.collection('requests').doc(requestId);
         final doc = await transaction.get(docRef);
         
         if (!doc.exists) {
@@ -212,12 +196,12 @@ class RequestService {
 
   /// Utility: attempt to read a request doc once.
   static Future<DocumentSnapshot<Map<String, dynamic>>> fetchRequest(String requestId) {
-    return _db.collection('requests').doc(requestId).get();
+    return _firestore.collection('requests').doc(requestId).get();
   }
 
   /// Fetch requests accepted by a specific pharmacist
   static Stream<QuerySnapshot<Map<String, dynamic>>> streamRequestsAcceptedByPharmacist(String pharmacistId) {
-    return _db
+    return _firestore
         .collection('requests')
         .where('acceptedBy', isEqualTo: pharmacistId)
         .snapshots();
@@ -225,7 +209,7 @@ class RequestService {
 
   /// Fetch active deliveries for a rider (status = delivering)
   static Stream<QuerySnapshot<Map<String, dynamic>>> streamRiderActiveRequests(String riderId) {
-    return _db
+    return _firestore
         .collection('requests')
         .where('riderId', isEqualTo: riderId)
         .snapshots();
@@ -244,7 +228,7 @@ class RequestService {
         updateData['riderId'] = riderId;
       }
 
-      await _db.collection('requests').doc(requestId).update(updateData);
+      await _firestore.collection('requests').doc(requestId).update(updateData);
     } on FirebaseException catch (e) {
       throw Exception('Firestore error (${e.code}): ${e.message}');
     } catch (e) {
