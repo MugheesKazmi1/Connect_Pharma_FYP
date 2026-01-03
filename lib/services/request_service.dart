@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 
@@ -17,21 +19,57 @@ class RequestService {
 
     final id = _uuid.v4();
     final ref = _storage.ref().child('prescriptions/$id.jpg');
+    
+    print('Storage Bucket: ${_storage.bucket}');
+    print('Upload path: descriptions/$id.jpg');
 
     try {
-      TaskSnapshot task;
-      if (image is XFile) {
-        final bytes = await image.readAsBytes();
-        task = await ref.putData(bytes, SettableMetadata(contentType: 'image/jpeg'));
-      } else if (image is Uint8List) {
-        task = await ref.putData(image, SettableMetadata(contentType: 'image/jpeg'));
+      TaskSnapshot snapshot;
+      
+      if (!kIsWeb && image is XFile) {
+        print('Using putFile for mobile upload...');
+        final uploadTask = ref.putFile(
+          File(image.path), 
+          SettableMetadata(contentType: 'image/jpeg')
+        );
+        
+        uploadTask.snapshotEvents.listen((TaskSnapshot snap) {
+           print('Upload progress: ${((snap.bytesTransferred / snap.totalBytes) * 100).toStringAsFixed(2)}%');
+        });
+
+        snapshot = await uploadTask.timeout(const Duration(seconds: 45));
       } else {
-        throw Exception('Unsupported image type: ${image.runtimeType}');
+        print('Using putData for web/bytes upload...');
+        Uint8List bytes;
+        if (image is XFile) {
+          bytes = await image.readAsBytes();
+        } else if (image is Uint8List) {
+          bytes = image;
+        } else {
+          throw Exception('Unsupported image type: ${image.runtimeType}');
+        }
+
+        final uploadTask = ref.putData(bytes, SettableMetadata(contentType: 'image/jpeg'));
+        
+        uploadTask.snapshotEvents.listen((TaskSnapshot snap) {
+          final progress = 100.0 * (snap.bytesTransferred / snap.totalBytes);
+          print('Upload progress: ${progress.toStringAsFixed(2)}%');
+        });
+
+        snapshot = await uploadTask.timeout(
+          const Duration(seconds: 30),
+          onTimeout: () => throw Exception('Upload timed out after 30 seconds. Check CORS if on Web, or Bucket existence on Mobile.'),
+        );
       }
 
-      final url = await task.ref.getDownloadURL();
+      print('Upload finished. State: ${snapshot.state}');
+      final url = await snapshot.ref.getDownloadURL();
+      print('Download URL obtained: $url');
       return url;
     } on FirebaseException catch (e) {
+      if (e.code == 'object-not-found') {
+        throw Exception('Storage error: Bucket not found or file disappeared. Ensure your Storage bucket is initialized in Firebase Console.');
+      }
       throw Exception('Storage error (${e.code}): ${e.message}');
     } catch (e) {
       throw Exception('Failed to upload prescription: $e');
@@ -54,8 +92,8 @@ class RequestService {
   }) async {
     // Validate input
     final trimmedName = medicineName.trim();
-    if (trimmedName.isEmpty) {
-      throw Exception('Medicine name cannot be empty');
+    if (trimmedName.isEmpty && prescriptionUrl == null) {
+      throw Exception('Please provide either a medicine name or a prescription');
     }
     if (userId.isEmpty) {
       throw Exception('User ID cannot be empty');
@@ -76,7 +114,10 @@ class RequestService {
     };
 
     try {
-      await docRef.set(payload);
+      await docRef.set(payload).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => throw Exception('Firestore request timed out. Check your internet connection.'),
+      );
       return docRef;
     } on FirebaseException catch (e) {
       throw Exception('Firestore error (${e.code}): ${e.message}');
@@ -106,7 +147,6 @@ class RequestService {
     return _db
         .collection('requests')
         .where('broadcast', isEqualTo: true)
-        .where('status', isEqualTo: 'open')
         .snapshots();
   }
 
@@ -188,7 +228,6 @@ class RequestService {
     return _db
         .collection('requests')
         .where('riderId', isEqualTo: riderId)
-        .where('status', isEqualTo: 'delivering')
         .snapshots();
   }
 

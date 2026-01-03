@@ -1,6 +1,10 @@
 
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import '../services/auth_service.dart';
+import '../theme.dart';
+import '../widgets/custom_button.dart';
+import '../widgets/custom_text_field.dart';
 import 'package:connect_pharma/screens/User/UserScreen.dart';
 import 'package:connect_pharma/screens/LoginScreen.dart';
 import 'Pharmacist/PharmacistScreen.dart';
@@ -24,9 +28,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final arg = ModalRoute.of(context)?.settings.arguments;
-    if (arg is String) _role = arg;
     if (arg is String) {
-      // normalize incoming role strings (e.g. "Pharmacist", "Driver", "User")
+      // normalize incoming role strings
       final s = arg.trim().toLowerCase();
       if (s == 'pharmacist') {
         _role = 'pharmacist';
@@ -36,13 +39,17 @@ class _SignUpScreenState extends State<SignUpScreen> {
         _role = 'user';
       } else {
         _role = s; // fallback
-    }
-    debugPrint('SignUpScreen: normalized role=$_role (from arg="$arg")');
+      }
+      debugPrint('SignUpScreen: normalized role=$_role (from arg="$arg")');
     }
   }
 
   void _showMsg(String msg) => ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg)),
+        SnackBar(
+          content: Text(msg),
+          backgroundColor: AppTheme.errorColor,
+          behavior: SnackBarBehavior.floating,
+        ),
       );
 
   Future<void> _submit() async {
@@ -89,54 +96,85 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final roleLabel = _role ?? 'No role selected';
+    final roleLabel = _role != null ? "${_role![0].toUpperCase()}${_role!.substring(1)}" : 'Unknown';
+    
     return Scaffold(
-      appBar: AppBar(title: const Text('Sign Up')),
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: const Text('Create Account'),
+        centerTitle: true,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        foregroundColor: AppTheme.textPrimary,
+      ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(18.0),
+        padding: const EdgeInsets.all(24.0),
         child: Form(
           key: _formKey,
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Signing up as: $roleLabel', style: const TextStyle(fontSize: 16)),
-              const SizedBox(height: 12),
-              TextFormField(
+              Text(
+                'Join as a $roleLabel',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  color: AppTheme.primaryColor,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ).animate().fadeIn().slideY(begin: -0.2, end: 0),
+              const SizedBox(height: 32),
+              CustomTextField(
                 controller: _nameCtrl,
-                decoration: const InputDecoration(labelText: 'Full name'),
+                label: 'Full Name',
+                hint: 'Enter your full name',
+                prefixIcon: Icons.person_outline,
                 validator: (v) => (v ?? '').trim().isEmpty ? 'Enter name' : null,
-              ),
-              const SizedBox(height: 8),
-              TextFormField(
+              ).animate().fadeIn(delay: 200.ms).slideX(begin: -0.05, end: 0),
+              const SizedBox(height: 16),
+              CustomTextField(
                 controller: _emailCtrl,
-                decoration: const InputDecoration(labelText: 'Email'),
+                label: 'Email',
+                hint: 'Enter your email',
+                prefixIcon: Icons.email_outlined,
                 keyboardType: TextInputType.emailAddress,
                 validator: (v) => (v ?? '').contains('@') ? null : 'Enter valid email',
-              ),
-              const SizedBox(height: 8),
-              TextFormField(
+              ).animate().fadeIn(delay: 300.ms).slideX(begin: 0.05, end: 0),
+              const SizedBox(height: 16),
+              CustomTextField(
                 controller: _passCtrl,
-                decoration: const InputDecoration(labelText: 'Password'),
+                label: 'Password',
+                hint: 'Create a password',
+                prefixIcon: Icons.lock_outline,
                 obscureText: true,
                 validator: (v) => (v ?? '').length >= 6 ? null : 'Min 6 chars',
-              ),
-              const SizedBox(height: 18),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _loading ? null : _submit,
-                  child: _loading
-                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                      : const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 12.0),
-                          child: Text('Create account'),
+              ).animate().fadeIn(delay: 400.ms).slideX(begin: -0.05, end: 0),
+              const SizedBox(height: 32),
+              CustomButton(
+                text: 'Sign Up',
+                onPressed: _submit,
+                isLoading: _loading,
+              ).animate().fadeIn(delay: 600.ms).slideY(begin: 0.2, end: 0),
+              const SizedBox(height: 24),
+              Center(
+                child: TextButton(
+                  onPressed: _loading ? null : () => Navigator.pushReplacementNamed(context, '/login'),
+                  child: RichText(
+                    text: TextSpan(
+                      text: 'Already have an account? ',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      children: [
+                        TextSpan(
+                          text: 'Login',
+                          style: TextStyle(
+                            color: AppTheme.primaryColor,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              TextButton(
-                onPressed: _loading ? null : () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen())),
-                child: const Text('Already have an account? Login'),
-              ),
+              ).animate().fadeIn(delay: 800.ms),
             ],
           ),
         ),

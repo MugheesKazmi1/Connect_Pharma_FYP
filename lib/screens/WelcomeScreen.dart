@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import '../theme.dart';
+import '../widgets/custom_button.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
@@ -6,64 +9,59 @@ class WelcomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 28.0),
-          child: Column(
-            children: [
-              const SizedBox(height: 16),
-              Align(
-                alignment: Alignment.topLeft,
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_back_ios),
-                  onPressed: () => Navigator.maybePop(context),
-                ),
-              ),
-              const SizedBox(height: 20),
-              const Icon(Icons.medical_services, size: 96, color: Colors.blue),
-              const SizedBox(height: 12),
-              const Text(
-                'WELCOME TO',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-              ),
-              const Text(
-                'CONNECT-PHARMA',
-                style: TextStyle(
-                    fontSize: 22,
-                    color: Colors.blue,
-                    fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              const Text('Find Your medicine Fast and Easy',
-                  style: TextStyle(color: Colors.grey)),
-              const Spacer(),
-              const Text('NEW HERE ?', style: TextStyle(fontSize: 16)),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.pushNamed(context, '/roles'),
-                  child: const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 14.0),
-                    child: Text('Sign me up!'),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              const Text('OR'),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton(
-                  onPressed: () => Navigator.pushNamed(context, '/login'),
-                  child: const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 14.0),
-                    child: Text('I already have an account'),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 36),
+      backgroundColor: Colors.white,
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.white,
+              AppTheme.primaryColor.withOpacity(0.05),
             ],
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Spacer(),
+                // Logo or Icon Placeholder
+                Icon(
+                  Icons.local_pharmacy_rounded,
+                  size: 100,
+                  color: AppTheme.primaryColor,
+                ).animate().scale(duration: 600.ms, curve: Curves.easeOutBack),
+                const SizedBox(height: 32),
+                Text(
+                  'Connect Pharma',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.displayLarge?.copyWith(
+                    color: AppTheme.primaryColor,
+                  ),
+                ).animate().fadeIn(delay: 200.ms).slideY(begin: 0.3, end: 0),
+                const SizedBox(height: 16),
+                Text(
+                  'Your Health, Connected.\nFind medications near you instantly.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    color: AppTheme.textSecondary,
+                    height: 1.5,
+                  ),
+                ).animate().fadeIn(delay: 400.ms).slideY(begin: 0.3, end: 0),
+                const Spacer(),
+                CustomButton(
+                  text: 'Get Started',
+                  onPressed: () {
+                    Navigator.pushNamed(context, '/roles');
+                  },
+                ).animate().fadeIn(delay: 600.ms).slideY(begin: 0.3, end: 0),
+                const SizedBox(height: 48),
+              ],
+            ),
           ),
         ),
       ),

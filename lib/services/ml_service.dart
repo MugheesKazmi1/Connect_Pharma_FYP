@@ -7,7 +7,7 @@ class MLService {
   static String get _baseUrl => kReleaseMode
       ? 'https://your-production-url.com' // TODO: Update for production
       : (defaultTargetPlatform == TargetPlatform.android
-          ? 'http://10.0.2.2:5000'
+          ? 'http://192.168.0.101:5000' // Use PC local IP for physical devices
           : 'http://127.0.0.1:5000');
 
   static Future<Map<String, dynamic>> getAlternatives(String medicineName) async {

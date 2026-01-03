@@ -2,15 +2,21 @@ import 'dart:async';
 import 'package:connect_pharma/services/notification_service.dart';
 import 'package:connect_pharma/services/ml_service.dart';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:image_picker/image_picker.dart' as picker;
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mapbox;
+import 'package:geolocator/geolocator.dart' as geo;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:connect_pharma/theme.dart';
+import 'package:connect_pharma/widgets/custom_button.dart';
+import 'package:connect_pharma/widgets/custom_text_field.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:connect_pharma/services/request_service.dart';
 import 'package:connect_pharma/widgets/FadeInSlide.dart';
 import 'package:connect_pharma/screens/User/DeliveryScreen.dart';
 import 'package:connect_pharma/screens/User/SelfPickupScreen.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:connect_pharma/services/ml_service.dart';
 
 class UserScreen extends StatefulWidget {
   // ... existing code ...
@@ -24,15 +30,28 @@ class UserScreen extends StatefulWidget {
 class _UserScreenState extends State<UserScreen> {
   final _searchCtrl = TextEditingController();
   bool _loading = false;
-  XFile? _prescription;
-  final ImagePicker _picker = ImagePicker();
+  picker.XFile? _prescription;
+  final picker.ImagePicker _picker = picker.ImagePicker();
   // Track previous request statuses to detect changes
   final Map<String, String> _previousStatuses = {};
   bool _isInitialLoad = true;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _requestSubscription;
-  GoogleMapController? _mapController;
-  Set<Marker> _markers = {};
-  LatLng _currentPosition = const LatLng(24.8607, 67.0011); // Default Karachi
+  mapbox.MapboxMap? _mapboxMap;
+  mapbox.PointAnnotationManager? _annotationManager;
+  mapbox.PointAnnotation? _userLocationAnnotation;
+  final List<mapbox.PointAnnotationOptions> _markers = [];
+  geo.Position _currentPosition = geo.Position(
+    latitude: 24.8607, 
+    longitude: 67.0011, 
+    timestamp: DateTime.now(), 
+    accuracy: 0, 
+    altitude: 0, 
+    heading: 0, 
+    speed: 0, 
+    speedAccuracy: 0,
+    altitudeAccuracy: 0,
+    headingAccuracy: 0,
+  ); // Default Karachi
   bool _mapLoading = true;
 
   @override
@@ -41,6 +60,16 @@ class _UserScreenState extends State<UserScreen> {
     NotificationService().init();
     _getCurrentLocation();
     _fetchPharmacyMarkers();
+    
+    // Fallback: If location takes too long, stop loading to show map at default location (Karachi)
+    // Increased to 15 seconds to allow the 10-second location timeout to finish first.
+    Future.delayed(const Duration(seconds: 15), () {
+      if (mounted && _mapLoading) {
+        setState(() => _mapLoading = false);
+        debugPrint('Map loading fallback triggered after 15s');
+      }
+    });
+    
     // Delay listener setup to ensure widget is fully mounted
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _listenToRequestStatusChanges();
@@ -49,15 +78,81 @@ class _UserScreenState extends State<UserScreen> {
 
   Future<void> _getCurrentLocation() async {
     try {
-      final position = await Geolocator.getCurrentPosition();
+      debugPrint('Fetching current location...');
+      bool serviceEnabled = await geo.Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        _showSnack('Location services are disabled on your device.');
+        if (mounted) setState(() => _mapLoading = false);
+        return;
+      }
+
+      geo.LocationPermission permission = await geo.Geolocator.checkPermission();
+      if (permission == geo.LocationPermission.denied) {
+        permission = await geo.Geolocator.requestPermission();
+        if (permission == geo.LocationPermission.denied) {
+          _showSnack('Location permissions are denied. Map will show default location.');
+          if (mounted) setState(() => _mapLoading = false);
+          return;
+        }
+      }
+      
+      if (permission == geo.LocationPermission.deniedForever) {
+        _showSnack('Location permissions are permanently denied. Please enable them in settings.');
+        if (mounted) setState(() => _mapLoading = false);
+        return;
+      }
+
+      // Try to get last known position first for faster responsiveness
+      if (!kIsWeb) {
+        geo.Position? lastPosition = await geo.Geolocator.getLastKnownPosition();
+        if (lastPosition != null && mounted) {
+          setState(() {
+            _currentPosition = lastPosition;
+          });
+          _mapboxMap?.setCamera(mapbox.CameraOptions(
+            center: mapbox.Point(coordinates: mapbox.Position(lastPosition.longitude, lastPosition.latitude)),
+            zoom: 15,
+          ));
+        }
+      }
+
+      // Fetch fresh position with timeout
+      final position = await geo.Geolocator.getCurrentPosition(
+        locationSettings: geo.LocationSettings(
+          accuracy: geo.LocationAccuracy.best,
+          timeLimit: const Duration(seconds: 10),
+        ),
+      );
+      
+      debugPrint('Detected Location: ${position.latitude}, ${position.longitude}');
+      
       if (mounted) {
         setState(() {
-          _currentPosition = LatLng(position.latitude, position.longitude);
+          _currentPosition = position;
           _mapLoading = false;
         });
-        _mapController?.animateCamera(
-          CameraUpdate.newLatLng(_currentPosition),
-        );
+
+        // Add user location pinpoint
+        if (_annotationManager != null) {
+          final point = mapbox.Point(coordinates: mapbox.Position(position.longitude, position.latitude));
+          
+          if (_userLocationAnnotation != null) {
+            await _annotationManager?.delete(_userLocationAnnotation!);
+          }
+          
+          _userLocationAnnotation = await _annotationManager?.create(mapbox.PointAnnotationOptions(
+            geometry: point,
+            textField: "You are here",
+            textColor: Colors.blue.value,
+            iconImage: "marker-15",
+            iconSize: 2.5,
+          ));
+        }
+
+        _mapboxMap?.setCamera(mapbox.CameraOptions(
+          center: mapbox.Point(coordinates: mapbox.Position(position.longitude, position.latitude)),
+          zoom: 15,
+        ));
       }
     } catch (e) {
       debugPrint('Error getting location: $e');
@@ -66,6 +161,7 @@ class _UserScreenState extends State<UserScreen> {
   }
 
   Future<void> _fetchPharmacyMarkers() async {
+
     try {
       final snapshot = await FirebaseFirestore.instance.collection('pharmacists').get();
       final newMarkers = snapshot.docs.map((doc) {
@@ -74,23 +170,31 @@ class _UserScreenState extends State<UserScreen> {
         final lng = data['lng'] as double? ?? data['pharmacyLng'] as double?;
         if (lat == null || lng == null) return null;
 
-        return Marker(
-          markerId: MarkerId(doc.id),
-          position: LatLng(lat, lng),
-          infoWindow: InfoWindow(
-            title: data['pharmacyName'] ?? data['displayName'] ?? 'Pharmacy',
-          ),
-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+        return mapbox.PointAnnotationOptions(
+          geometry: mapbox.Point(coordinates: mapbox.Position(lng, lat)),
+          textField: data['pharmacyName'] ?? data['displayName'] ?? 'Pharmacy',
+          textColor: Colors.blue.value,
+          iconImage: "marker-15",
+          iconSize: 2.0,
         );
-      }).whereType<Marker>().toSet();
+      }).whereType<mapbox.PointAnnotationOptions>().toList();
 
       if (mounted) {
         setState(() {
-          _markers = newMarkers;
+          _markers.clear();
+          _markers.addAll(newMarkers);
         });
+        _updateMarkers();
       }
     } catch (e) {
       debugPrint('Error fetching pharmacy markers: $e');
+    }
+  }
+
+  void _updateMarkers() {
+    if (_annotationManager != null && _markers.isNotEmpty) {
+      _annotationManager?.deleteAll();
+      _annotationManager?.createMulti(_markers);
     }
   }
 
@@ -240,8 +344,8 @@ class _UserScreenState extends State<UserScreen> {
   }
 
   Future<void> _pickPrescription() async {
-    final XFile? file =
-        await _picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+    final picker.XFile? file =
+        await _picker.pickImage(source: picker.ImageSource.gallery, imageQuality: 80);
     if (file == null) return;
     setState(() => _prescription = file);
   }
@@ -253,11 +357,16 @@ class _UserScreenState extends State<UserScreen> {
       return;
     }
     setState(() => _loading = true);
+    debugPrint('Starting upload process...');
     try {
       String? url;
       if (_prescription != null) {
+        debugPrint('Uploading prescription image...');
         url = await RequestService.uploadPrescription(_prescription!);
+        debugPrint('Prescription uploaded: $url');
       }
+      
+      debugPrint('Creating Firestore request...');
       await RequestService.createRequest(
         userId: user.uid,
         medicineName: _searchCtrl.text.trim(),
@@ -266,12 +375,17 @@ class _UserScreenState extends State<UserScreen> {
         userLat: _currentPosition.latitude,
         userLng: _currentPosition.longitude,
       );
+      debugPrint('Request created successfully');
       _showSnack('Request sent to nearby pharmacies');
       setState(() => _prescription = null);
     } catch (e) {
+      debugPrint('Upload/Request error: $e');
       _showSnack('Failed: $e');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+        debugPrint('Upload process finished.');
+      }
     }
   }
 
@@ -290,23 +404,42 @@ class _UserScreenState extends State<UserScreen> {
     final user = FirebaseAuth.instance.currentUser;
     final displayName = user?.displayName ?? 'Guest User';
     final email = user?.email ?? '';
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            offset: const Offset(0, 4),
+            blurRadius: 10,
+          )
+        ],
+      ),
       child: Row(children: [
-        CircleAvatar(radius: 26, child: const Icon(Icons.person)),
-        const SizedBox(width: 12),
+        Container(
+          padding: const EdgeInsets.all(2),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: AppTheme.primaryColor, width: 2),
+          ),
+          child: CircleAvatar(
+            radius: 24,
+            backgroundColor: AppTheme.primaryColor.withOpacity(0.1),
+            child: Icon(Icons.person, color: AppTheme.primaryColor),
+          ),
+        ),
+        const SizedBox(width: 16),
         Expanded(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(displayName,
-                style:
-                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(fontSize: 18)),
             const SizedBox(height: 2),
-            Text(email, style: const TextStyle(color: Colors.grey)),
+            Text(email, style: Theme.of(context).textTheme.bodyMedium),
           ]),
         ),
         IconButton(
-          icon: const Icon(Icons.logout),
+          icon: Icon(Icons.logout, color: AppTheme.errorColor),
           onPressed: () async {
             await FirebaseAuth.instance.signOut();
             if (mounted) {
@@ -315,7 +448,7 @@ class _UserScreenState extends State<UserScreen> {
           },
         )
       ]),
-    );
+    ).animate().fadeIn().slideY(begin: -0.2, end: 0);
   }
 
 
@@ -544,21 +677,14 @@ class _UserScreenState extends State<UserScreen> {
   // Updated _searchBar to trigger AI on submit if configured, currently kept standard
   Widget _searchBar() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+      padding: const EdgeInsets.symmetric(horizontal: 24.0),
       child: Row(children: [
         Expanded(
-          child: TextField(
+          child: CustomTextField(
             controller: _searchCtrl,
-            decoration: InputDecoration(
-              prefixIcon: const Icon(Icons.search),
-              hintText: 'Search medicine by name',
-              filled: true,
-              fillColor: Colors.white,
-              contentPadding: const EdgeInsets.symmetric(vertical: 12),
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none),
-            ),
+            label: 'Search',
+            hint: 'Search medicine by name...',
+            prefixIcon: Icons.search,
             onSubmitted: (_) async {
               final user = FirebaseAuth.instance.currentUser;
               if (user == null || _searchCtrl.text.trim().isEmpty) {
@@ -574,48 +700,68 @@ class _UserScreenState extends State<UserScreen> {
                 medicineName: _searchCtrl.text.trim(),
                 prescriptionUrl: null,
                 broadcast: true,
+                userLat: _currentPosition.latitude,
+                userLng: _currentPosition.longitude,
               );
 
               _showSnack('Request sent to pharmacies');
             },
           ),
         ),
-        const SizedBox(width: 8),
-        IconButton(
-            icon: const Icon(Icons.upload_file), onPressed: _pickPrescription),
+        const SizedBox(width: 12),
+        Container(
+          decoration: BoxDecoration(
+            color: AppTheme.primaryColor.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.primaryColor.withOpacity(0.3)),
+          ),
+          child: IconButton(
+            icon: Icon(Icons.upload_file, color: AppTheme.primaryColor),
+             onPressed: _pickPrescription,
+          ),
+        ),
       ]),
-    );
+    ).animate().fadeIn(delay: 200.ms).slideY(begin: 0.1, end: 0);
   }
 
   Widget _actionButtons() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12),
       child: Row(children: [
         Expanded(
-          child: ElevatedButton(
-            onPressed: _loading ? null : _uploadAndBroadcast,
-            style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14)),
-            child: _loading
-                ? const SizedBox(
-                    height: 18,
-                    width: 18,
-                    child: CircularProgressIndicator(
-                        color: Colors.white, strokeWidth: 2))
-                : const Text('Upload Prescription'),
+          child: CustomButton(
+            text: 'Upload Prescription',
+            onPressed: _uploadAndBroadcast,
+            isLoading: _loading,
+            color: AppTheme.accentColor,
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 16),
         Expanded(
-          child: OutlinedButton(
-            onPressed: () => _showAISuggestions(_searchCtrl.text.trim()),
-            style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14)),
-            child: const Text('Ask For Suggestions'),
+          child: Container(
+            height: 56,
+            decoration: BoxDecoration(
+              border: Border.all(color: AppTheme.primaryColor, width: 2),
+              borderRadius: BorderRadius.circular(12),
+              color: Colors.white,
+            ),
+            child: InkWell(
+              onTap: () => _showAISuggestions(_searchCtrl.text.trim()),
+              borderRadius: BorderRadius.circular(12),
+              child: Center(
+                child: Text(
+                  'AI Suggestions',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: AppTheme.primaryColor,
+                  ),
+                ),
+              ),
+            ),
           ),
         ),
       ]),
-    );
+    ).animate().fadeIn(delay: 300.ms).slideY(begin: 0.1, end: 0);
   }
 
   Widget _mapPlaceholder() {
@@ -633,68 +779,87 @@ class _UserScreenState extends State<UserScreen> {
           ),
         ],
       ),
-      child: Stack(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: _mapLoading 
-              ? const Center(child: CircularProgressIndicator())
-              : GoogleMap(
-                  onMapCreated: (controller) => _mapController = controller,
-                  initialCameraPosition: CameraPosition(
-                    target: _currentPosition,
-                    zoom: 14,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Stack(
+          children: [
+            if (kIsWeb)
+              Container(
+                color: Colors.grey.shade200,
+                child: const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.map_outlined, size: 48, color: Colors.grey),
+                      SizedBox(height: 8),
+                      Text('Map not available on Web', style: TextStyle(color: Colors.grey)),
+                      Text('Please test on Android/iOS', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    ],
                   ),
-                  markers: _markers,
-                  myLocationEnabled: true,
-                  myLocationButtonEnabled: false,
-                  zoomControlsEnabled: false,
-                  mapToolbarEnabled: false,
                 ),
-          ),
-          // Search pharmacies overlay
-          Positioned(
-            top: 12,
-            left: 12,
-            right: 12,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 8,
-                  ),
-                ],
+              )
+            else
+              mapbox.MapWidget(
+                key: const ValueKey('home_map'),
+                onMapCreated: (mapbox.MapboxMap mapboxMap) async {
+                  _mapboxMap = mapboxMap;
+                  _annotationManager = await mapboxMap.annotations.createPointAnnotationManager();
+                  _updateMarkers();
+                  
+                  // Set initial camera
+                  mapboxMap.setCamera(mapbox.CameraOptions(
+                    center: mapbox.Point(coordinates: mapbox.Position(_currentPosition.longitude, _currentPosition.latitude)),
+                    zoom: 14,
+                  ));
+                },
               ),
-              child: Row(
-                children: [
-                  const Icon(Icons.search, size: 20, color: Colors.grey),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Search nearby pharmacies...',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 13),
+            if (!kIsWeb && _mapLoading)
+               const Center(child: CircularProgressIndicator()),
+            // Search pharmacies overlay
+            Positioned(
+              top: 12,
+              left: 12,
+              right: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 8,
                     ),
-                  ),
-                ],
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.search, size: 20, color: Colors.grey),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Search nearby pharmacies...',
+                        style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
-          // My Location Button
-          Positioned(
-            bottom: 12,
-            right: 12,
-            child: FloatingActionButton.small(
-              onPressed: _getCurrentLocation,
-              backgroundColor: Colors.white,
-              foregroundColor: Colors.blue,
-              child: const Icon(Icons.my_location),
+            // My Location Button
+            Positioned(
+              bottom: 12,
+              right: 12,
+              child: FloatingActionButton.small(
+                heroTag: null, // Fix: Multiple heroes sharing same tag
+                onPressed: _getCurrentLocation,
+                backgroundColor: Colors.white,
+                foregroundColor: AppTheme.primaryColor,
+                child: const Icon(Icons.my_location),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -731,36 +896,69 @@ class _UserScreenState extends State<UserScreen> {
                 return Center(
                   child: Padding(
                     padding: const EdgeInsets.all(20.0),
-                    child: Text('Error: ${snapshot.error}'),
-                  ),
-                );
-              }
-
-              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                return Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20.0),
-                    child: Center(
-                      child: Text(
-                        'No requests yet',
-                        style: TextStyle(color: Colors.grey[600]),
-                      ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.error_outline, color: Colors.red, size: 40),
+                        const SizedBox(height: 12),
+                        Text('Error: ${snapshot.error}', textAlign: TextAlign.center),
+                        const SizedBox(height: 8),
+                        const Text('Tip: If you see an "index" error, the app will resolve it automatically in a moment.', 
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
                     ),
                   ),
                 );
               }
 
-              final docs = snapshot.data!.docs;
-              
-              // Sort documents by createdAt (most recent first) since we removed orderBy from query
-              final sortedDocs = docs.toList()
+              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                return Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(32.0),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.grey.shade200),
+                  ),
+                  child: Column(
+                    children: [
+                      Icon(Icons.history, size: 48, color: Colors.grey.shade300),
+                      const SizedBox(height: 16),
+                      Text(
+                        'No requests yet',
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                      Text(
+                        'Your history will appear here',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              final now = DateTime.now();
+              final oneHourAgo = now.subtract(const Duration(hours: 1));
+
+              // Filter and Sort documents by createdAt
+              final sortedDocs = snapshot.data!.docs.where((doc) {
+                final createdAt = doc.data()['createdAt'] as Timestamp?;
+                if (createdAt == null) return true; // Show pending/new requests
+                return createdAt.toDate().isAfter(oneHourAgo);
+              }).toList()
                 ..sort((a, b) {
                   final aTime = a.data()['createdAt'] as Timestamp?;
                   final bTime = b.data()['createdAt'] as Timestamp?;
                   if (aTime == null && bTime == null) return 0;
                   if (aTime == null) return 1;
                   if (bTime == null) return -1;
-                  return bTime.compareTo(aTime); // Descending order (most recent first)
+                  return bTime.compareTo(aTime);
                 });
 
               return Column(
@@ -776,7 +974,7 @@ class _UserScreenState extends State<UserScreen> {
 
                   // Format medicine name
                   final displayName = medicineName.isEmpty
-                      ? 'Unknown Medicine'
+                      ? (prescriptionUrl != null ? 'Prescription Attached' : 'Unknown Medicine')
                       : medicineName.length > 1
                           ? medicineName[0].toUpperCase() + medicineName.substring(1)
                           : medicineName.toUpperCase();
@@ -845,6 +1043,7 @@ class _UserScreenState extends State<UserScreen> {
                             ),
                             title: Text(
                               displayName,
+                              overflow: TextOverflow.ellipsis,
                               style: TextStyle(
                                 fontWeight: (status == 'responded' || status == 'accepted' || status == 'delivering')
                                     ? FontWeight.bold 
@@ -861,11 +1060,14 @@ class _UserScreenState extends State<UserScreen> {
                                          color: statusColor, 
                                          size: 16),
                                     const SizedBox(width: 4),
-                                    Text(
-                                      statusText,
-                                      style: TextStyle(
-                                        color: statusColor,
-                                        fontWeight: FontWeight.w600,
+                                    Flexible(
+                                      child: Text(
+                                        statusText,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color: statusColor,
+                                          fontWeight: FontWeight.w600,
+                                        ),
                                       ),
                                     ),
                                     if ((status == 'responded' || status == 'accepted' || status == 'delivering' || status == 'ready_for_pickup') && acceptedBy != null)
@@ -884,13 +1086,16 @@ class _UserScreenState extends State<UserScreen> {
                                                 pharmacyData?['pharmacyName'] as String? ?? 
                                                 pharmacyData?['name'] as String? ?? 
                                                 'Pharmacy';
-                                            return Padding(
-                                              padding: const EdgeInsets.only(left: 8),
-                                              child: Text(
-                                                'by $pharmacyName',
-                                                style: TextStyle(
-                                                  color: Colors.green.shade700,
-                                                  fontWeight: FontWeight.w500,
+                                            return Flexible(
+                                              child: Padding(
+                                                padding: const EdgeInsets.only(left: 8),
+                                                child: Text(
+                                                  'by $pharmacyName',
+                                                  overflow: TextOverflow.ellipsis,
+                                                  style: TextStyle(
+                                                    color: Colors.green.shade700,
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
                                                 ),
                                               ),
                                             );
@@ -912,21 +1117,26 @@ class _UserScreenState extends State<UserScreen> {
                                     ),
                                     child: ClipRRect(
                                       borderRadius: BorderRadius.circular(8),
-                                      child: GoogleMap(
-                                        initialCameraPosition: CameraPosition(
-                                          target: LatLng(data['pharmacyLat'], data['pharmacyLng']),
-                                          zoom: 14,
-                                        ),
-                                        markers: {
-                                          Marker(
-                                            markerId: const MarkerId('pharmacy'),
-                                            position: LatLng(data['pharmacyLat'], data['pharmacyLng']),
+                                      child: kIsWeb 
+                                        ? Container(
+                                            color: Colors.grey.shade100,
+                                            child: const Center(child: Icon(Icons.map, color: Colors.grey)),
+                                          )
+                                        : mapbox.MapWidget(
+                                            onMapCreated: (mapbox.MapboxMap mapboxMap) async {
+                                              final point = mapbox.Point(coordinates: mapbox.Position(data['pharmacyLng'], data['pharmacyLat']));
+                                              final am = await mapboxMap.annotations.createPointAnnotationManager();
+                                              am.create(mapbox.PointAnnotationOptions(
+                                                geometry: point,
+                                                iconImage: "marker-15",
+                                                iconSize: 2.0,
+                                              ));
+                                              mapboxMap.setCamera(mapbox.CameraOptions(
+                                                center: point,
+                                                zoom: 14,
+                                              ));
+                                            },
                                           ),
-                                        },
-                                        liteModeEnabled: true, // Optimized for list views
-                                        zoomGesturesEnabled: false,
-                                        scrollGesturesEnabled: false,
-                                      ),
                                     ),
                                   ),
                                 ],

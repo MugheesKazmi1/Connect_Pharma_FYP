@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -15,16 +16,55 @@ class RiderScreen extends StatefulWidget {
 
 class _RiderScreenState extends State<RiderScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  final Set<String> _rejectedRequestIds = {};
+  DocumentSnapshot<Map<String, dynamic>>? _currentNotificationRequest;
+  StreamSubscription? _notificationSubscription;
+  bool _isNotificationVisible = false;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _startNotificationListener();
+  }
+
+  void _startNotificationListener() {
+    _notificationSubscription = RequestService.streamAcceptedRequests().listen((snapshot) {
+      final now = DateTime.now();
+      final oneHourAgo = now.subtract(const Duration(hours: 1));
+      
+      final activeDocs = snapshot.docs.where((doc) {
+        final data = doc.data();
+        final status = data['status'];
+        final createdAt = data['createdAt'] as Timestamp?;
+        if (status != 'accepted') return false;
+        if (createdAt == null) return true;
+        return createdAt.toDate().isAfter(oneHourAgo);
+      }).toList();
+
+      if (activeDocs.isNotEmpty) {
+        final latest = activeDocs.first;
+        if (!_rejectedRequestIds.contains(latest.id) && 
+            (_currentNotificationRequest == null || _currentNotificationRequest!.id != latest.id)) {
+          setState(() {
+            _currentNotificationRequest = latest;
+            _isNotificationVisible = true;
+          });
+        }
+      } else {
+        if (_isNotificationVisible) {
+          setState(() {
+            _isNotificationVisible = false;
+          });
+        }
+      }
+    });
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    _notificationSubscription?.cancel();
     super.dispose();
   }
   
@@ -52,12 +92,143 @@ class _RiderScreenState extends State<RiderScreen> with SingleTickerProviderStat
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
+      body: Stack(
         children: [
-          _buildNewOrders(),
-          _buildMyDeliveries(),
+          TabBarView(
+            controller: _tabController,
+            children: [
+              _buildNewOrders(),
+              _buildMyDeliveries(),
+            ],
+          ),
+          _buildSlidingNotificationOverlay(),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSlidingNotificationOverlay() {
+    if (_currentNotificationRequest == null) return const SizedBox.shrink();
+
+    final data = _currentNotificationRequest!.data()!;
+    final medicineName = data['medicineName'] ?? 'Unknown Medicine';
+
+    return AnimatedPositioned(
+      duration: const Duration(milliseconds: 600),
+      curve: Curves.elasticOut,
+      bottom: _isNotificationVisible ? 20 : -250,
+      left: 16,
+      right: 16,
+      child: Material(
+        elevation: 10,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.orange.withOpacity(0.3), width: 2),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.orange.withOpacity(0.1),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade50,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.delivery_dining, color: Colors.orange),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'NEW ORDER READY',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.orange,
+                                letterSpacing: 1.1,
+                              ),
+                            ),
+                            Text(
+                              'Just now',
+                              style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
+                            ),
+                          ],
+                        ),
+                        Text(
+                          medicineName,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextButton(
+                      onPressed: () {
+                        setState(() {
+                          _isNotificationVisible = false;
+                          _rejectedRequestIds.add(_currentNotificationRequest!.id);
+                        });
+                      },
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.grey.shade600,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: const Text('Ignore', style: TextStyle(fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () {
+                        final id = _currentNotificationRequest!.id;
+                        setState(() {
+                          _isNotificationVisible = false;
+                        });
+                        _startDelivery(id);
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: const Text('Deliver Now', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -74,13 +245,30 @@ class _RiderScreenState extends State<RiderScreen> with SingleTickerProviderStat
                 return const Center(child: CircularProgressIndicator());
               }
 
-              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                return const Center(
-                  child: Text('No new orders waiting for pickup'),
-                );
+              if (snapshot.hasError) {
+                return Center(child: Text('Error: ${snapshot.error}'));
+              }
+              if (!snapshot.hasData) {
+                return const Center(child: CircularProgressIndicator());
               }
 
-              final docs = snapshot.data!.docs;
+              final now = DateTime.now();
+              final oneHourAgo = now.subtract(const Duration(hours: 1));
+              final docs = snapshot.data!.docs.where((doc) {
+                final data = doc.data();
+                final status = data['status'];
+                final createdAt = data['createdAt'] as Timestamp?;
+                
+                if (status != 'accepted') return false; // Client-side status filter
+                if (createdAt == null) return true;
+                return createdAt.toDate().isAfter(oneHourAgo);
+              }).toList();
+
+              if (docs.isEmpty) {
+                return const Center(
+                  child: Text('No recent orders waiting for pickup'),
+                );
+              }
 
               return ListView.builder(
                 padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12),
@@ -136,7 +324,12 @@ class _RiderScreenState extends State<RiderScreen> with SingleTickerProviderStat
                               children: [
                                 const Icon(Icons.store, size: 16, color: Colors.grey),
                                 const SizedBox(width: 4),
-                                Text('Pharmacy ID: $pharmacyId'),
+                                Expanded(
+                                  child: Text(
+                                    'Pharmacy ID: $pharmacyId',
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
                               ],
                             ),
                             const SizedBox(height: 12),
@@ -178,13 +371,30 @@ class _RiderScreenState extends State<RiderScreen> with SingleTickerProviderStat
           return const Center(child: CircularProgressIndicator());
         }
 
-        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          return const Center(
-            child: Text('No active deliveries'),
-          );
+        if (snapshot.hasError) {
+          return Center(child: Text('Error: ${snapshot.error}'));
+        }
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
         }
 
-        final docs = snapshot.data!.docs;
+        final now = DateTime.now();
+        final oneHourAgo = now.subtract(const Duration(hours: 1));
+        final docs = snapshot.data!.docs.where((doc) {
+          final data = doc.data();
+          final status = data['status'];
+          final createdAt = data['createdAt'] as Timestamp?;
+          
+          if (status != 'delivering') return false; // Client-side status filter
+          if (createdAt == null) return true;
+          return createdAt.toDate().isAfter(oneHourAgo);
+        }).toList();
+
+        if (docs.isEmpty) {
+          return const Center(
+            child: Text('No recent active deliveries'),
+          );
+        }
 
         return ListView.builder(
           padding: const EdgeInsets.all(12),

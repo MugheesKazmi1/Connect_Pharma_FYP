@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:flutter/foundation.dart';
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' as mapbox;
 import 'package:maps_launcher/maps_launcher.dart';
 
 class SelfPickupScreen extends StatefulWidget {
@@ -17,7 +18,7 @@ class SelfPickupScreen extends StatefulWidget {
 }
 
 class _SelfPickupScreenState extends State<SelfPickupScreen> {
-  late LatLng _pharmacyPosition;
+  late mapbox.Point _pharmacyPosition;
 
   @override
   void initState() {
@@ -25,7 +26,7 @@ class _SelfPickupScreenState extends State<SelfPickupScreen> {
     // Use the coordinates shared by the pharmacist
     final lat = widget.requestData['pharmacyLat'] as double? ?? 24.8607;
     final lng = widget.requestData['pharmacyLng'] as double? ?? 67.0011;
-    _pharmacyPosition = LatLng(lat, lng);
+    _pharmacyPosition = mapbox.Point(coordinates: mapbox.Position(lng, lat));
   }
 
   @override
@@ -65,8 +66,8 @@ class _SelfPickupScreenState extends State<SelfPickupScreen> {
                     ElevatedButton.icon(
                       onPressed: () {
                         MapsLauncher.launchCoordinates(
-                          _pharmacyPosition.latitude,
-                          _pharmacyPosition.longitude,
+                          _pharmacyPosition.coordinates.lat.toDouble(),
+                          _pharmacyPosition.coordinates.lng.toDouble(),
                           'Pharmacy Location',
                         );
                       },
@@ -86,20 +87,34 @@ class _SelfPickupScreenState extends State<SelfPickupScreen> {
             Expanded(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: GoogleMap(
-                  initialCameraPosition: CameraPosition(
-                    target: _pharmacyPosition,
-                    zoom: 15,
-                  ),
-                  markers: {
-                    Marker(
-                      markerId: const MarkerId('pharmacy'),
-                      position: _pharmacyPosition,
-                      infoWindow: const InfoWindow(title: 'Pharmacy Location'),
+                child: kIsWeb
+                  ? Container(
+                      color: Colors.grey.shade100,
+                      child: const Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.storefront, color: Colors.grey),
+                            Text('Map not available on Web', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                    )
+                  : mapbox.MapWidget(
+                      onMapCreated: (mapbox.MapboxMap mapboxMap) async {
+                        final annotationManager = await mapboxMap.annotations.createPointAnnotationManager();
+                        annotationManager.create(mapbox.PointAnnotationOptions(
+                          geometry: _pharmacyPosition,
+                          textField: 'Pharmacy Location',
+                          iconImage: "marker-15",
+                          iconSize: 2.0,
+                        ));
+                        mapboxMap.setCamera(mapbox.CameraOptions(
+                          center: _pharmacyPosition,
+                          zoom: 15,
+                        ));
+                      },
                     ),
-                  },
-                  myLocationEnabled: true,
-                ),
               ),
             ),
             const SizedBox(height: 16),
